@@ -475,13 +475,26 @@ async function executeCodeGen(step, assembled, ctx) {
   const { systemPrompt, userPrompt, targetModel } = assembled;
   const { projectDir, buildDir } = ctx;
 
-  const isSolidityStep = step.stage === 'contract_audit'
+  // Contracts (not tests, not deploy scripts) always use opus — they're the most critical code.
+  // Test files and deploy scripts use at least sonnet.
+  // Everything else respects the assigned model.
+  const isContractStep = (
+    step.stage === 'contract_audit'
     || step.description?.toLowerCase().includes('contract')
     || step.description?.toLowerCase().includes('.sol')
-    || step.name?.toLowerCase().includes('deploy script')
-    || step.name?.toLowerCase().includes('.t.sol');
-  const effectiveModel = isSolidityStep && targetModel === 'minimax-m2.7'
-    ? 'claude-sonnet-4.6' : targetModel;
+  ) && !step.name?.toLowerCase().includes('test')
+    && !step.name?.toLowerCase().includes('.t.sol')
+    && !step.name?.toLowerCase().includes('deploy script');
+
+  const isTestOrDeployStep = step.name?.toLowerCase().includes('test')
+    || step.name?.toLowerCase().includes('.t.sol')
+    || step.name?.toLowerCase().includes('deploy script');
+
+  const effectiveModel = isContractStep
+    ? 'claude-opus-4.6'
+    : (isTestOrDeployStep && targetModel === 'minimax-m2.7')
+      ? 'claude-sonnet-4.6'
+      : targetModel;
 
   const callFn = pickModelFn(effectiveModel);
   const llmOutput = await callFn(systemPrompt, userPrompt, {

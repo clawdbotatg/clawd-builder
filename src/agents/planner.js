@@ -33,6 +33,17 @@ Example: <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wgh
 CSS/TAILWIND: SE2 uses Tailwind CSS v4. The globals.css uses "@import "tailwindcss";" (NOT the v3 "@import tailwindcss/base" syntax).
 DO NOT rewrite globals.css from scratch. Only ADD custom CSS rules after the existing imports.
 The DaisyUI theme is configured via "@plugin "daisyui/theme"" blocks in globals.css — add new theme blocks, don't replace the import structure.
+
+PHASE 1 MUST INCLUDE FRONTEND STEPS:
+After deploying locally (yarn deploy), Phase 1 MUST include steps to build the frontend before
+moving to Phase 2. Required frontend steps in Phase 1:
+  1. Write the main page component in packages/nextjs/app/page.tsx (or equivalent)
+  2. Use SE2 hooks ONLY: useScaffoldReadContract, useScaffoldWriteContract, useScaffoldEventHistory
+     — NEVER use raw wagmi hooks (useContractRead, useContractWrite, etc.)
+  3. Run "yarn next:build" to verify no TypeScript errors
+  4. Run "yarn start" to confirm the dev server starts
+ALL FRONTEND COMPONENT WRITING happens in Phase 1. Phase 2 and 3 are deployment steps only.
+Do NOT defer frontend work to Phase 3.
 `;
 
 export async function simplePlan(job, messages, analysis, skills) {

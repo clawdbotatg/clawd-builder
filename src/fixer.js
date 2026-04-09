@@ -1,8 +1,20 @@
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import { cheap, medium } from './llm.js';
 import { log, logStepExecution } from './logger.js';
 import { writeFilesFromOutput, writeSingleOutput } from './file-writer.js';
+
+// EVM revert signatures that indicate the CONTRACT has a bug, not the test.
+// When a test fails with one of these, diagnose both files rather than blaming the test.
+const EVM_REVERT_PATTERNS = [
+  /ERC20InvalidReceiver/,
+  /ERC20InsufficientAllowance/,
+  /ERC20InsufficientBalance/,
+  /ERC721InvalidTokenId/,
+  /OwnableUnauthorizedAccount/,
+  /Panic\(\d+\)/,
+  /\[FAIL:\s+[A-Z][a-zA-Z]+\(/,  // custom errors: SomeError(...)
+];
 
 /**
  * Parse a compiler/runtime error, identify the broken file(s),
@@ -47,6 +59,57 @@ export async function fixCodeFromError(errorOutput, projectDir, step, context) {
 
     const isSolidity = resolvedPath.endsWith('.sol');
     const isTestFailure = fileErrors.some(e => e.type === 'test_failure');
+
+    // Detect whether the test failure reason looks like an EVM revert (contract bug)
+    // vs a test assertion failure (test bug).
+    const isEvmRevert = isTestFailure && EVM_REVERT_PATTERNS.some(p => p.test(errorOutput));
+
+    if (isEvmRevert) {
+      // Neutral diagnosis: include both test and contract, let the LLM decide what to fix.
+      // Returns files in === FILEPATH === format so we can write multiple files.
+      log(`FIXER: EVM revert detected — running neutral diagnosis on test + contract`);
+      const contractContext = gatherContractFiles(resolvedPath, projectDir);
+
+      try {
+        const fixedOutput = await medium(
+          `You are a Solidity debugger. A Forge test suite is failing with EVM-level reverts (not assertion failures). ` +
+          `This means either the CONTRACT has a bug (e.g. wrong burn mechanism, wrong address used) OR the test mock is incomplete. ` +
+          `Diagnose the root cause and fix WHICHEVER FILE(S) need fixing — the contract, the test, or both. ` +
+          `Return ALL changed files using this format:\n\n` +
+          `=== packages/foundry/path/to/file.sol ===\n(full corrected file contents)\n=== END ===\n\n` +
+          `Only output files that actually need changes. No explanations outside the === blocks.`,
+          `## Failing Test File: ${resolvedPath}
+${errorSummary}
+
+## Full Test Output
+${errorOutput.slice(0, 3000)}
+
+## Test File Contents
+${brokenCode}
+
+${contractContext}
+
+Diagnose whether the contract logic or the test assumptions are wrong. Fix whichever file(s) need fixing. Return corrected files in === FILEPATH === format.`,
+          { role: `fixer-${basename(relPath)}-diagnosis`, maxTokens: 8192 }
+        );
+
+        const written = writeFilesFromOutput(fixedOutput, projectDir);
+        if (written.length > 0) {
+          for (const f of written) {
+            fixes.push({ path: f.relativePath, errors: fileErrors.length, fixed: true });
+            log(`FIXER: diagnosis fixed ${f.relativePath}`);
+          }
+        } else {
+          fixes.push({ path: resolvedPath, errors: fileErrors.length, fixed: false });
+          log(`FIXER: diagnosis produced no file changes`);
+        }
+      } catch (err) {
+        log(`FIXER: diagnosis failed: ${err.message}`);
+        fixes.push({ path: resolvedPath, errors: fileErrors.length, fixed: false });
+      }
+      continue;
+    }
+
     const callFn = isSolidity ? medium : cheap;
     const modelLabel = isSolidity ? 'sonnet (solidity fix)' : 'cheap (fix)';
 
@@ -198,6 +261,52 @@ function deduplicateErrors(errors) {
     seen.add(key);
     return true;
   });
+}
+
+/**
+ * For EVM revert diagnosis: find all contract .sol files the test imports
+ * (and all contracts in packages/foundry/contracts/) to give the LLM
+ * the full picture so it can decide which file has the bug.
+ */
+function gatherContractFiles(testRelPath, projectDir) {
+  const parts = [];
+
+  // Read the test file to find its imports
+  const absTest = join(projectDir, testRelPath);
+  let testCode = '';
+  try { testCode = readFileSync(absTest, 'utf-8'); } catch { return ''; }
+
+  // Collect imported local .sol files (not lib/ or forge-std/)
+  const importRe = /import\s+["']([^"']+\.sol)["']/g;
+  let m;
+  while ((m = importRe.exec(testCode)) !== null) {
+    const raw = m[1];
+    if (raw.includes('forge-std') || raw.includes('lib/') || raw.includes('@openzeppelin')) continue;
+    const resolved = join(dirname(testRelPath), raw);
+    const abs = join(projectDir, resolved);
+    if (existsSync(abs)) {
+      try {
+        parts.push(`## Contract: ${resolved}\n${readFileSync(abs, 'utf-8').slice(0, 6000)}`);
+      } catch { /* skip */ }
+    }
+  }
+
+  // Also sweep packages/foundry/contracts/ for any .sol files not already included
+  const contractsDir = join(projectDir, 'packages/foundry/contracts');
+  if (existsSync(contractsDir)) {
+    try {
+      for (const f of readdirSync(contractsDir)) {
+        if (!f.endsWith('.sol')) continue;
+        const rel = `packages/foundry/contracts/${f}`;
+        if (parts.some(p => p.includes(rel))) continue;
+        try {
+          parts.push(`## Contract: ${rel}\n${readFileSync(join(contractsDir, f), 'utf-8').slice(0, 6000)}`);
+        } catch { /* skip */ }
+      }
+    } catch { /* skip */ }
+  }
+
+  return parts.length > 0 ? `\n## Contract Source Files\n${parts.join('\n\n')}` : '';
 }
 
 /**
