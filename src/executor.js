@@ -132,9 +132,32 @@ export async function executeAllSteps(steps, buildDir, context) {
           break;
         }
 
-        // Shell step failed -- try to fix the source code before retrying
+        // Shell step failed -- try auto-fixes before retrying
         if (result.stepType === 'shell_cmd' && result.exitCode !== 0) {
           const errorText = result.stderr || result.stdout || '';
+
+          // Auto-install missing npm packages (e.g. "Module not found: Can't resolve '@fontsource/...'")
+          const missingPkg = errorText.match(/Module not found:.*Can't resolve '([^']+)'/);
+          if (missingPkg) {
+            const pkg = missingPkg[1].startsWith('@')
+              ? missingPkg[1].split('/').slice(0, 2).join('/')
+              : missingPkg[1].split('/')[0];
+            log(`EXECUTOR: auto-installing missing package: ${pkg}`);
+            try {
+              execSync(`yarn add ${pkg}`, {
+                cwd: projectDir,
+                timeout: 60000,
+                encoding: 'utf-8',
+                stdio: ['pipe', 'pipe', 'pipe'],
+              });
+              logStepExecution(stepId, 'fixing', `Installed missing package ${pkg} — retrying`);
+              lastFeedback = `Installed ${pkg}. Retrying.`;
+              continue;
+            } catch (installErr) {
+              log(`EXECUTOR: failed to install ${pkg}: ${installErr.message?.slice(0, 200)}`);
+            }
+          }
+
           const fixes = await fixCodeFromError(errorText, projectDir, step, context);
           if (fixes && fixes.some(f => f.fixed)) {
             const fixedFiles = fixes.filter(f => f.fixed).map(f => f.path).join(', ');
@@ -279,12 +302,34 @@ function preprocessCommand(command, projectDir) {
   }
 
   let cmd = command.replace(/^cd\s+\S+\s*&&\s*/, '');
+  const extraEnv = {};
 
   if (/yarn\s+install/.test(cmd) && !cmd.includes('YARN_ENABLE_IMMUTABLE_INSTALLS')) {
     cmd = cmd.replace(/yarn\s+install/, 'YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install');
   }
 
-  return { processed: cmd, extraEnv: {} };
+  // Next.js build: Node 25+ has a broken localStorage that crashes RainbowKit/next-themes at SSG time.
+  // Create the polyfill if needed and inject it via NODE_OPTIONS.
+  if (/yarn\s+next:build/.test(cmd)) {
+    const polyfillPath = join(projectDir, 'packages', 'nextjs', 'polyfill-localstorage.cjs');
+    if (!existsSync(polyfillPath)) {
+      const polyfillCode = `if(typeof globalThis.localStorage!=="undefined"&&typeof globalThis.localStorage.getItem!=="function"){const s=new Map();globalThis.localStorage={getItem:k=>s.get(k)??null,setItem:(k,v)=>s.set(k,String(v)),removeItem:k=>s.delete(k),clear:()=>s.clear(),key:i=>[...s.keys()][i]??null,get length(){return s.size}};}`;
+      writeFileSync(polyfillPath, polyfillCode);
+    }
+    extraEnv.NODE_OPTIONS = `--require ${polyfillPath}`;
+  }
+
+  // Live network deploys: SE-2's Makefile doesn't pass --account/--password to forge for non-localhost.
+  // Rewrite to call forge directly from packages/foundry with proper auth, then generate ABIs.
+  const liveDeployMatch = cmd.match(/yarn\s+deploy\s+--network\s+((?!localhost)\S+)/);
+  if (liveDeployMatch) {
+    const network = liveDeployMatch[1];
+    const keystoreName = 'agent-deployer';
+    const keystorePassword = 'agent';
+    cmd = `cd packages/foundry && forge script script/Deploy.s.sol --rpc-url ${network} --account ${keystoreName} --password ${keystorePassword} --broadcast --ffi && node scripts-js/generateTsAbis.js`;
+  }
+
+  return { processed: cmd, extraEnv };
 }
 
 function executeBlockingCmd(step, command, projectDir, buildDir, extraEnv = {}) {

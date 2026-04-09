@@ -25,6 +25,14 @@ All deployment goes through "yarn deploy" which handles everything correctly.
 
 NEVER write or generate "packages/nextjs/contracts/deployedContracts.ts" — it is AUTO-GENERATED
 by "yarn deploy" and will be overwritten. Any step that writes it manually produces fake data.
+
+FONTS: Use Google Fonts CDN via <link> in layout.tsx or next/font/google import.
+NEVER use @fontsource packages — they require a separate npm install step that breaks builds.
+Example: <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+
+CSS/TAILWIND: SE2 uses Tailwind CSS v4. The globals.css uses "@import "tailwindcss";" (NOT the v3 "@import tailwindcss/base" syntax).
+DO NOT rewrite globals.css from scratch. Only ADD custom CSS rules after the existing imports.
+The DaisyUI theme is configured via "@plugin "daisyui/theme"" blocks in globals.css — add new theme blocks, don't replace the import structure.
 `;
 
 export async function simplePlan(job, messages, analysis, skills) {

@@ -8,6 +8,7 @@ import { analyzeJob } from './src/agents/orchestrator.js';
 import { simplePlan, smartPlan, generateSteps } from './src/agents/planner.js';
 import { evaluatePlan } from './src/agents/evaluator.js';
 import { executeAllSteps } from './src/executor.js';
+import { ensureDeployer } from './src/deployer.js';
 
 const DEFAULT_JOB_ID = 39;
 
@@ -264,6 +265,21 @@ async function runFull(resumeDir) {
     logStep('evaluate', `Done. Score: ${evaluation.overallScore || '?'}/10, Approved: ${evaluation.approved}`);
   }
 
+  // --- ensure deployer keystore for live deploys ---
+  let deployer = null;
+  const hasLiveDeploy = Array.isArray(steps) && steps.some(s =>
+    s.command && /yarn\s+deploy\s+--network\s+(?!localhost)\S+/.test(s.command)
+  );
+  if (hasLiveDeploy) {
+    logStep('deployer', 'Ensuring deployer keystore is ready for live network deploy...');
+    try {
+      deployer = await ensureDeployer();
+      logStep('deployer', `Done. Deployer: ${deployer.address} (keystore: ${deployer.keystoreName})`);
+    } catch (err) {
+      logStep('deployer', `WARNING: Could not set up deployer: ${err.message}. Live deploys may fail.`);
+    }
+  }
+
   // --- execute ---
   if (Array.isArray(steps) && steps.length > 0) {
     logStep('execute', `Plan score: ${evaluation.overallScore}/10. Starting step execution...`);
@@ -273,6 +289,7 @@ async function runFull(resumeDir) {
       analysis,
       job,
       messages,
+      deployer,
     });
     logStep('execute', `Execution complete. ${Object.keys(execResult.completedSteps).length}/${steps.length} steps succeeded.`);
 
