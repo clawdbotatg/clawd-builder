@@ -39,6 +39,21 @@ CSS/TAILWIND: SE2 uses Tailwind CSS v4.
   These are CSS variables, NOT Tailwind utilities, and @apply will throw "Cannot apply unknown utility class" at build time.
   Instead: use them directly in className="bg-base-200" in JSX/TSX, or use CSS variables directly: background-color: oklch(var(--b2))
 
+DEPLOY SCRIPT STRUCTURE — AVOID DOUBLE vm.startBroadcast:
+Deploy.s.sol MUST deploy contracts directly inline using ScaffoldEthDeployerRunner.
+NEVER call DeployYourContract.run() or DeployBurnBoard.run() from Deploy.s.sol — those
+sub-scripts each have their own ScaffoldEthDeployerRunner modifier which calls vm.startBroadcast
+again, causing "vm.startBroadcast: a broadcast is active already" revert.
+NEVER deploy the SE2 default YourContract — only deploy your custom contract (e.g. BurnBoard).
+
+Correct Deploy.s.sol pattern:
+  contract DeployScript is ScaffoldETHDeploy {
+    function run() external ScaffoldEthDeployerRunner {
+      BurnBoard burnBoard = new BurnBoard(cawdTokenAddress);
+      deployments.push(Deployment({name: "BurnBoard", addr: address(burnBoard)}));
+    }
+  }
+
 RESEARCH/VERIFICATION STEPS MUST BE NON-BLOCKING:
 Steps that only verify or read external state (cast call, curl, cast balance, etc.) MUST NOT
 be listed as dependencies for contract writing, test writing, or any other code generation step.
@@ -49,6 +64,28 @@ LOCAL DEPLOY ALWAYS REQUIRES A RUNNING CHAIN:
 Before "yarn deploy" (local), you MUST have a step that runs "yarn fork --network base".
 The fork step starts a local anvil node forked from Base mainnet — required for all local deploys.
 Step order in Phase 1: scaffold → write contract → write tests → compile → run tests → yarn fork --network base → yarn deploy → write frontend → yarn next:build
+
+SE2 scaffold-eth PACKAGE EXPORTS (from ~~/hooks/scaffold-eth or ~~/components/scaffold-eth):
+Valid exports include: Address, Balance, BlockieAvatar, AddressInput, EtherInput, IntegerInput,
+useScaffoldReadContract, useScaffoldWriteContract, useScaffoldEventHistory, useTargetNetwork, etc.
+NEVER import: AddressAvatarDropdown, ConnectWallet, Web3Button, or any component you haven't seen
+explicitly listed in the SE2 source. Use RainbowKit's ConnectButton from "@rainbow-me/rainbowkit" directly.
+
+LAYOUT.TSX MUST USE ScaffoldEthAppWithProviders — NEVER call getDefaultConfig() in layout.tsx:
+The root layout (app/layout.tsx) is a SERVER component. getDefaultConfig() from @rainbow-me/rainbowkit
+is a CLIENT function and will fail during Next.js build (static page generation).
+Always use the SE2 pattern in layout.tsx:
+  import { ScaffoldEthAppWithProviders } from "~~/components/ScaffoldEthAppWithProviders";
+  export default function RootLayout({ children }) {
+    return <html><body><ScaffoldEthAppWithProviders>{children}</ScaffoldEthAppWithProviders></body></html>;
+  }
+NEVER import getDefaultConfig, WagmiProvider, RainbowKitProvider, or QueryClientProvider in layout.tsx.
+ScaffoldEthAppWithProviders already sets all of these up correctly as a client component.
+
+RAINBOWKIT + NEXT.JS APP ROUTER: Any component that imports from @rainbow-me/rainbowkit OR
+uses wagmi hooks (useAccount, useBalance, etc.) MUST have "use client" at the top.
+Missing "use client" causes "getDefaultConfig() from the server" build error.
+All custom components using blockchain state must be Client Components.
 
 SE2 BUILT-IN COMPONENTS (the only ~~/components/* that exist in a fresh scaffold):
 - ~~/components/Header  (SE2 default header — may be removed/replaced)

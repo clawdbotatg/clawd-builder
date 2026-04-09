@@ -240,6 +240,42 @@ function parseErrors(output) {
     });
   }
 
+  // Next.js: "Attempted import error: 'X' is not exported from 'module'"
+  // Format: ./components/X.tsx\nAttempted import error: '...' is not exported from '...'
+  const attemptedImportRe = /\.(\/[^\s]+\.tsx?)\nAttempted import error:\s*'([^']+)' is not exported from '([^']+)'/g;
+  while ((match = attemptedImportRe.exec(output)) !== null) {
+    errors.push({
+      message: `Attempted import error: '${match[2]}' is not exported from '${match[3]}' — remove or replace this import`,
+      file: match[1].replace(/^\.\//, ''),
+      line: 1,
+      type: 'typescript',
+    });
+  }
+
+  // ESLint errors in Next.js build output:
+  // ./components/PostForm.tsx
+  // 56:59  Error: 'isApproving' is assigned a value but never used.  @typescript-eslint/no-unused-vars
+  const eslintRe = /\.(\/[^\s]+\.tsx?)\n[\s\S]*?(\d+):(\d+)\s+Error:\s+(.+?)\s{2,}@[\w/\-]+/g;
+  while ((match = eslintRe.exec(output)) !== null) {
+    errors.push({
+      message: match[4].trim(),
+      file: match[1].replace(/^\.\//, ''),
+      line: parseInt(match[2], 10),
+      type: 'typescript',
+    });
+  }
+
+  // Forge script deploy error: vm.startBroadcast called twice (Deploy.s.sol wraps sub-scripts
+  // that also use ScaffoldEthDeployerRunner). Point to Deploy.s.sol as the broken file.
+  if (/vm\.startBroadcast: a broadcast is active already/i.test(output)) {
+    errors.push({
+      message: 'vm.startBroadcast called twice — Deploy.s.sol must deploy contracts inline, not call sub-script run() methods that also use ScaffoldEthDeployerRunner',
+      file: 'script/Deploy.s.sol',
+      line: 1,
+      type: 'solidity',
+    });
+  }
+
   // Forge test failures — use the "Failing tests:" section which attributes each failure to its file:
   //   "Encountered N failing test in test/BurnBoard.t.sol:BurnBoardTest"
   //   "[FAIL: reason] test_name()"

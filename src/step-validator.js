@@ -127,6 +127,9 @@ function validateNextBuild(step, output) {
     /Failed to compile/i,
     /error TS\d+/,
     /Module not found/,
+    /Attempted import error/,
+    /Failed to collect page data/,
+    /Failed to collect configuration/,
   ];
 
   const failure = errorPatterns.find(p => p.test(output));

@@ -283,6 +283,17 @@ async function runFull(resumeDir) {
   // --- execute ---
   if (Array.isArray(steps) && steps.length > 0) {
     logStep('execute', `Plan score: ${evaluation.overallScore}/10. Starting step execution...`);
+
+    // Load previous execution log when resuming — lets executeAllSteps skip already-done steps
+    const prevExecLogPath = join(buildDir, 'execution-log.json');
+    const previousLog = existsSync(prevExecLogPath)
+      ? JSON.parse(readFileSync(prevExecLogPath, 'utf-8'))
+      : [];
+    if (previousLog.length > 0) {
+      const prevCompleted = previousLog.filter(e => e.status === 'completed').length;
+      logStep('execute', `Resume: found ${prevCompleted} previously completed steps — will skip them`);
+    }
+
     const execResult = await executeAllSteps(steps, buildDir, {
       skills,
       plan,
@@ -290,7 +301,7 @@ async function runFull(resumeDir) {
       job,
       messages,
       deployer,
-    });
+    }, previousLog);
     logStep('execute', `Execution complete. ${Object.keys(execResult.completedSteps).length}/${steps.length} steps succeeded.`);
 
     if (evaluation.approved === false) {
