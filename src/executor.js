@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, existsSync, readdirSync, statSync, rmSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync, rmSync } from 'fs';
 import { join } from 'path';
 import { execSync, spawn } from 'child_process';
 import { cheap, medium, expensive } from './llm.js';
@@ -135,6 +135,27 @@ export async function executeAllSteps(steps, buildDir, context) {
         // Shell step failed -- try auto-fixes before retrying
         if (result.stepType === 'shell_cmd' && result.exitCode !== 0) {
           const errorText = result.stderr || result.stdout || '';
+
+          // Auto-start local fork when yarn deploy fails because no chain is running
+          const noChain = /Connection refused.*8545|error sending request.*8545|ECONNREFUSED.*8545/i.test(errorText);
+          const isLocalDeploy = /yarn\s+deploy(?!\s+--network\s+(?!localhost))/i.test(step.command || '');
+          if (noChain && isLocalDeploy && attempt === 0) {
+            log(`EXECUTOR: no local chain detected — auto-starting yarn fork --network base`);
+            try {
+              await executeLongRunningCmd(
+                { id: `${step.id}-fork`, name: 'auto-fork' },
+                'yarn fork --network base',
+                projectDir,
+                buildDir,
+                {}
+              );
+              logStepExecution(stepId, 'fixing', 'Started yarn fork --network base — retrying deploy');
+              lastFeedback = 'Started local fork. Retrying deploy.';
+              continue;
+            } catch (forkErr) {
+              log(`EXECUTOR: auto-fork failed: ${forkErr.message?.slice(0, 200)}`);
+            }
+          }
 
           // Auto-install missing npm packages (e.g. "Module not found: Can't resolve '@fontsource/...'")
           const missingPkg = errorText.match(/Module not found:.*Can't resolve '([^']+)'/);
@@ -306,6 +327,11 @@ function preprocessCommand(command, projectDir) {
 
   if (/yarn\s+install/.test(cmd) && !cmd.includes('YARN_ENABLE_IMMUTABLE_INSTALLS')) {
     cmd = cmd.replace(/yarn\s+install/, 'YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install');
+  }
+
+  // Next.js build: sanitize CSS files before building to prevent Tailwind v4 errors.
+  if (/yarn\s+next:build/.test(cmd)) {
+    sanitizeCssFiles(projectDir);
   }
 
   // Next.js build: Node 25+ has a broken localStorage that crashes RainbowKit/next-themes at SSG time.
@@ -559,6 +585,99 @@ function pickModelFn(targetModel) {
   if (targetModel.includes('opus')) return expensive;
   if (targetModel.includes('sonnet')) return medium;
   return cheap;
+}
+
+/**
+ * Before running yarn next:build, fix common CSS mistakes that LLMs make with SE2/Tailwind v4:
+ *
+ * 1. Tailwind v3 directives: replace "@tailwind base/components/utilities" with "@import tailwindcss"
+ * 2. DaisyUI @apply: remove @apply with DaisyUI semantic tokens (bg-base-*, text-base-content, etc.)
+ *    that cause "Cannot apply unknown utility class" at build time. Replace with CSS variable equivalents.
+ *
+ * Runs in-place on all .css files under packages/nextjs/
+ */
+function sanitizeCssFiles(projectDir) {
+  const nextjsDir = join(projectDir, 'packages', 'nextjs');
+  if (!existsSync(nextjsDir)) return;
+
+  // DaisyUI v4 CSS variable map for @apply replacements
+  const DAISY_VAR_MAP = {
+    'bg-base-100': 'background-color: oklch(var(--b1))',
+    'bg-base-200': 'background-color: oklch(var(--b2))',
+    'bg-base-300': 'background-color: oklch(var(--b3))',
+    'bg-primary':  'background-color: oklch(var(--p))',
+    'bg-secondary': 'background-color: oklch(var(--s))',
+    'bg-accent':   'background-color: oklch(var(--a))',
+    'bg-neutral':  'background-color: oklch(var(--n))',
+    'bg-error':    'background-color: oklch(var(--er))',
+    'bg-warning':  'background-color: oklch(var(--wa))',
+    'bg-success':  'background-color: oklch(var(--su))',
+    'bg-info':     'background-color: oklch(var(--in))',
+    'text-base-content': 'color: oklch(var(--bc))',
+    'text-primary': 'color: oklch(var(--pc))',
+    'text-error':  'color: oklch(var(--erc))',
+    'border-base-200': 'border-color: oklch(var(--b2))',
+    'border-base-300': 'border-color: oklch(var(--b3))',
+  };
+
+  const cssFiles = findCssFiles(nextjsDir);
+  for (const filePath of cssFiles) {
+    try {
+      let content = readFileSync(filePath, 'utf-8');
+      let changed = false;
+
+      // Fix 1: replace Tailwind v3 directives with v4 import
+      const v3Block = /@tailwind\s+base\s*;\s*\n?\s*@tailwind\s+components\s*;\s*\n?\s*@tailwind\s+utilities\s*;/;
+      if (v3Block.test(content)) {
+        content = content.replace(v3Block, '@import "tailwindcss";');
+        log(`CSS-SANITIZE: replaced Tailwind v3 directives in ${filePath}`);
+        changed = true;
+      }
+
+      // Fix 2: replace @apply with DaisyUI semantic tokens
+      // Handles: @apply bg-base-200 border ...; — remove just the known bad tokens
+      for (const [token, replacement] of Object.entries(DAISY_VAR_MAP)) {
+        // Remove the token from @apply lines (may have multiple classes)
+        const applyRe = new RegExp(`(@apply\\s+[^;]*?)\\b${token}\\b([^;]*;)`, 'g');
+        if (applyRe.test(content)) {
+          // Reset lastIndex
+          applyRe.lastIndex = 0;
+          content = content.replace(applyRe, (match, before, after) => {
+            const cleaned = (before + after).replace(`@apply  `, '@apply ').replace('@apply ;', '').trim();
+            // If @apply is now empty, insert the CSS variable replacement
+            if (cleaned === '' || /^@apply\s*;?$/.test(cleaned)) {
+              return `${replacement};`;
+            }
+            return `${replacement};\n  ${cleaned}`;
+          });
+          log(`CSS-SANITIZE: replaced @apply ${token} in ${filePath}`);
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        writeFileSync(filePath, content);
+      }
+    } catch (err) {
+      log(`CSS-SANITIZE: failed to process ${filePath}: ${err.message}`);
+    }
+  }
+}
+
+function findCssFiles(dir) {
+  const results = [];
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name === '.next') continue;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        results.push(...findCssFiles(full));
+      } else if (entry.name.endsWith('.css')) {
+        results.push(full);
+      }
+    }
+  } catch { /* skip unreadable dirs */ }
+  return results;
 }
 
 /**

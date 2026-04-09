@@ -30,9 +30,19 @@ FONTS: Use Google Fonts CDN via <link> in layout.tsx or next/font/google import.
 NEVER use @fontsource packages — they require a separate npm install step that breaks builds.
 Example: <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
 
-CSS/TAILWIND: SE2 uses Tailwind CSS v4. The globals.css uses "@import "tailwindcss";" (NOT the v3 "@import tailwindcss/base" syntax).
-DO NOT rewrite globals.css from scratch. Only ADD custom CSS rules after the existing imports.
-The DaisyUI theme is configured via "@plugin "daisyui/theme"" blocks in globals.css — add new theme blocks, don't replace the import structure.
+CSS/TAILWIND: SE2 uses Tailwind CSS v4.
+- The correct import is: @import "tailwindcss";
+- NEVER use Tailwind v3 syntax: @tailwind base; @tailwind components; @tailwind utilities; — these DO NOT EXIST in v4 and will break the build.
+- DO NOT rewrite globals.css from scratch. Only ADD custom CSS rules after the existing imports.
+- The DaisyUI theme is configured via "@plugin "daisyui/theme"" blocks in globals.css — add new theme blocks, don't replace the import structure.
+- NEVER use @apply with DaisyUI semantic tokens (bg-base-100, bg-base-200, bg-base-300, text-base-content, text-primary, text-error, border-base-200, etc.)
+  These are CSS variables, NOT Tailwind utilities, and @apply will throw "Cannot apply unknown utility class" at build time.
+  Instead: use them directly in className="bg-base-200" in JSX/TSX, or use CSS variables directly: background-color: oklch(var(--b2))
+
+LOCAL DEPLOY ALWAYS REQUIRES A RUNNING CHAIN:
+Before "yarn deploy" (local), you MUST have a step that runs "yarn fork --network base".
+The fork step starts a local anvil node forked from Base mainnet — required for all local deploys.
+Step order in Phase 1: scaffold → write contract → write tests → compile → run tests → yarn fork --network base → yarn deploy → write frontend → yarn next:build
 
 PHASE 1 MUST INCLUDE FRONTEND STEPS:
 After deploying locally (yarn deploy), Phase 1 MUST include steps to build the frontend before
