@@ -55,7 +55,9 @@ export async function fixCodeFromError(errorOutput, projectDir, step, context) {
       .join('\n');
 
     // Gather related files for context (e.g., if test imports contract, include it)
-    const relatedContext = gatherRelatedFiles(brokenCode, relPath, projectDir);
+    // Use resolvedPath (has packages/foundry/ prefix) so relative imports like
+    // "../contracts/BurnBoard.sol" resolve to the correct location on disk.
+    const relatedContext = gatherRelatedFiles(brokenCode, resolvedPath, projectDir);
 
     const isSolidity = resolvedPath.endsWith('.sol');
     const isTestFailure = fileErrors.some(e => e.type === 'test_failure');
