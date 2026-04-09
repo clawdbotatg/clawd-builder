@@ -348,6 +348,12 @@ function preprocessCommand(command, projectDir) {
     extraEnv.NODE_OPTIONS = `--require ${polyfillPath}`;
   }
 
+  // Vercel deploy: yarn vercel:yolo doesn't pass --yes, which causes interactive confirmation prompt.
+  // Replace with direct vercel deploy command that includes --yes.
+  if (/yarn\s+vercel:yolo/.test(cmd)) {
+    cmd = cmd.replace(/yarn\s+vercel:yolo(\s+--prod)?/, 'npx vercel deploy --prod --yes');
+  }
+
   // Live network deploys: SE-2's Makefile doesn't pass --account/--password to forge for non-localhost.
   // Rewrite to call forge directly from packages/foundry with proper auth, then generate ABIs.
   const liveDeployMatch = cmd.match(/yarn\s+deploy\s+--network\s+((?!localhost)\S+)/);

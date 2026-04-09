@@ -201,6 +201,17 @@ function parseErrors(output) {
     });
   }
 
+  // Next.js build: ./path/to/file.tsx:line:col\nType error: message
+  const nextRe = /\.(\/[^\s:]+\.tsx?):(\d+):\d+\n(?:Type\s+)?error:\s*(.+)/g;
+  while ((match = nextRe.exec(output)) !== null) {
+    errors.push({
+      message: match[3].trim(),
+      file: match[1].replace(/^\.\//, ''),  // strip leading ./
+      line: parseInt(match[2], 10),
+      type: 'typescript',
+    });
+  }
+
   // Next.js / generic: Error: message in file:line
   const genericRe = /Error:\s*(.+?)\s+in\s+(\S+):(\d+)/g;
   while ((match = genericRe.exec(output)) !== null) {
