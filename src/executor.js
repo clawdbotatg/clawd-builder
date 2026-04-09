@@ -312,9 +312,12 @@ function preprocessCommand(command, projectDir) {
   }
 
   if (/create-eth/.test(command)) {
-    // Extract the project name — it's the last non-flag argument.
-    // Handles hyphens (burn-board), flags (-s foundry), and --skip-install.
-    const args = command.split(/\s+/).filter(a => a && !a.startsWith('-') && !/create-eth|npx|foundry|hardhat/.test(a));
+    // Extract the project name — it's the last non-flag argument of the create-eth invocation.
+    // Strip everything from && onward first so "yarn install" or "cd name" appended by the planner
+    // doesn't pollute the arg list (e.g. "npx create-eth@latest -s foundry my-app && yarn install"
+    // would otherwise yield "install" as the project name).
+    const createEthPart = command.split(/\s*&&/)[0];
+    const args = createEthPart.split(/\s+/).filter(a => a && !a.startsWith('-') && !/create-eth|npx|foundry|hardhat/.test(a));
     const projectName = args[args.length - 1] || 'project';
     const skipInstall = command.includes('--skip-install') ? '' : ' --skip-install';
     const scaffoldPart = command.replace(/(create-eth@\S+)/, `$1${skipInstall}`)
