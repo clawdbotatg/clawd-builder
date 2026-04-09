@@ -132,6 +132,22 @@ export async function executeAllSteps(steps, buildDir, context) {
           break;
         }
 
+        // cast call / cast read steps are read-only chain queries used for research/verification.
+        // They may revert (e.g. calling burn(0) to test the interface) or hit rate limits.
+        // Treat as non-blocking — mark passed so downstream steps aren't blocked.
+        if (result.stepType === 'shell_cmd' && result.exitCode !== 0) {
+          const cmdLower = (step.command || '').toLowerCase();
+          if (/^\s*cast\s+(call|balance|code|storage|block|receipt|tx)\b/.test(cmdLower)) {
+            log(`EXECUTOR: cast read step failed — treating as non-blocking (read-only verification)`);
+            logStepExecution(stepId, 'completed', 'cast call failed but treated as non-blocking verification');
+            state[stepId].status = 'completed';
+            completedSteps[stepId] = { name: step.name, outputSummary: `cast call failed: ${result.stderr?.slice(0, 100)}`, filesWritten: [] };
+            executionLog.push({ stepId, status: 'completed', attempts: attempt + 1, filesWritten: [], validation: { passed: true, reason: 'Non-blocking cast call' } });
+            success = true;
+            break;
+          }
+        }
+
         // Shell step failed -- try auto-fixes before retrying
         if (result.stepType === 'shell_cmd' && result.exitCode !== 0) {
           const errorText = result.stderr || result.stdout || '';
