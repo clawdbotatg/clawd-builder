@@ -212,6 +212,23 @@ function parseErrors(output) {
     });
   }
 
+  // Next.js build: Module not found for local paths (~~/ or ./)
+  // Format: ./path/to/importer.tsx\nModule not found: Can't resolve '~~/path/to/missing'
+  const moduleNotFoundRe = /\.(\/[^\s]+\.tsx?)\n(?:import\s+\S+\s+from\s+"[^"]+"\s*\n)?Module not found: Can't resolve '([^']+)'/g;
+  while ((match = moduleNotFoundRe.exec(output)) !== null) {
+    const importingFile = match[1].replace(/^\.\//, '');
+    const missingModule = match[2];
+    // Only handle local imports (~~ or ./) — npm packages are handled by auto-install
+    if (missingModule.startsWith('~~') || missingModule.startsWith('.')) {
+      errors.push({
+        message: `Module not found: Can't resolve '${missingModule}'`,
+        file: importingFile,
+        line: 1,
+        type: 'typescript',
+      });
+    }
+  }
+
   // Next.js / generic: Error: message in file:line
   const genericRe = /Error:\s*(.+?)\s+in\s+(\S+):(\d+)/g;
   while ((match = genericRe.exec(output)) !== null) {
