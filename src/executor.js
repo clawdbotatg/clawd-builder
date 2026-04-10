@@ -9,7 +9,7 @@ import { validateStep } from './step-validator.js';
 import { fixCodeFromError } from './fixer.js';
 
 const MAX_RETRIES = 2;
-const SHELL_TIMEOUT_MS = 180_000;
+const SHELL_TIMEOUT_MS = 360_000; // 6 min — vercel/ipfs deploys can be slow
 const LONG_RUNNING_PATTERNS = /\byarn\s+(chain|fork|start|dev|serve|watch)\b/i;
 const BACKGROUND_READY_TIMEOUT_MS = 30_000;
 
@@ -407,10 +407,11 @@ function preprocessCommand(command, projectDir) {
     extraEnv.NODE_OPTIONS = `--require ${polyfillPath}`;
   }
 
-  // Vercel deploy: yarn vercel:yolo doesn't pass --yes, which causes interactive confirmation prompt.
-  // Replace with direct vercel deploy command that includes --yes.
+  // Vercel deploy: yarn vercel:yolo doesn't pass --yes, causing interactive prompts.
+  // Add --yes flag so it runs non-interactively. Use the local vercel v39 binary (not npx vercel
+  // which resolves to a newer global version that broke --scope handling in non-interactive mode).
   if (/yarn\s+vercel:yolo/.test(cmd)) {
-    cmd = cmd.replace(/yarn\s+vercel:yolo(\s+--prod)?/, 'npx vercel deploy --prod --yes');
+    cmd = cmd.replace(/yarn\s+vercel:yolo(\s+--prod)?/, 'yarn vercel:yolo --prod --yes');
   }
 
   // Live network deploys: SE-2's Makefile doesn't pass --account/--password to forge for non-localhost.
@@ -433,10 +434,13 @@ function executeBlockingCmd(step, command, projectDir, buildDir, extraEnv = {}) 
   let stderr = '';
   let exitCode = 0;
 
+  // Vercel and IPFS deploys upload to remote servers and can take 15+ minutes.
+  const effectiveTimeout = /vercel|ipfs/.test(command) ? 900_000 : SHELL_TIMEOUT_MS;
+
   try {
     stdout = execSync(command, {
       cwd: projectDir,
-      timeout: SHELL_TIMEOUT_MS,
+      timeout: effectiveTimeout,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, HOME: process.env.HOME, ...extraEnv },

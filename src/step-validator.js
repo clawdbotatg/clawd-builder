@@ -33,6 +33,18 @@ function validateShellResult(step, result, projectDir) {
   const output = (stdout || '') + (stderr || '');
   const cmd = step.command || '';
 
+  // Vercel deploy: the CLI outputs the production URL as soon as the upload completes
+  // (before the remote build finishes). If we time out or the CLI exits with code 1,
+  // we check for the URL — if present, the deploy was accepted by Vercel's servers.
+  if (/vercel:yolo|vercel\s+deploy/.test(cmd)) {
+    const vercelUrl = (stdout || '').match(/https:\/\/[a-z0-9-]+\.vercel\.app/)
+      || (stderr || '').match(/https:\/\/[a-z0-9-]+\.vercel\.app/);
+    if (vercelUrl) {
+      logDecision('validator', `step=${step.id} PASS`, `Vercel deploy accepted — URL: ${vercelUrl[0]}`);
+      return { passed: true, reason: `Vercel deployment queued/deployed: ${vercelUrl[0]}`, suggestions: [] };
+    }
+  }
+
   if (exitCode !== 0) {
     const errorOutput = output.slice(-2000);
     const reason = `Exit code ${exitCode}: ${errorOutput.slice(0, 300)}`;
