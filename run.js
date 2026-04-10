@@ -265,6 +265,52 @@ async function runFull(resumeDir) {
     logStep('evaluate', `Done. Score: ${evaluation.overallScore || '?'}/10, Approved: ${evaluation.approved}`);
   }
 
+  // --- evaluator gating: re-extract steps if evaluator rejected ---
+  if (evaluation.approved === false && !cachedEval.exists) {
+    const weaknesses = (evaluation.weaknesses || []).join('; ');
+    const missing = (evaluation.missingItems || []).join('; ');
+    logStep('evaluate', `Evaluator rejected plan. Re-extracting steps with feedback...`);
+    log(`  Weaknesses: ${weaknesses}`);
+    log(`  Missing: ${missing}`);
+
+    // Append evaluator feedback to the plan so step extractor can address gaps
+    const augmentedPlan = `${plan}\n\n## EVALUATOR FEEDBACK (address these in the extracted steps)\nWeaknesses: ${weaknesses}\nMissing items: ${missing}\nThe evaluator specifically flagged missing Phase 2/3 steps. You MUST include deployment and production hosting steps.`;
+
+    steps = await generateSteps(augmentedPlan, analysis);
+    writeFileSync(join(buildDir, 'steps.json'), JSON.stringify(steps, null, 2));
+    logStep('evaluate', `Re-extracted ${Array.isArray(steps) ? steps.length : '?'} steps with evaluator feedback.`);
+
+    // Re-evaluate to confirm
+    evaluation = await evaluatePlan(plan, job, analysis);
+    writeFileSync(join(buildDir, 'evaluation.json'), JSON.stringify(evaluation, null, 2));
+    logStep('evaluate', `Re-evaluation: Score: ${evaluation.overallScore || '?'}/10, Approved: ${evaluation.approved}`);
+  }
+
+  // --- hard requirement gate: verify steps include mandatory deployment targets ---
+  if (Array.isArray(steps)) {
+    const hasBaseDeploy = steps.some(s => s.command && /yarn\s+deploy\s+--network\s+base/.test(s.command));
+    const hasBgipfs = steps.some(s => s.command && /yarn\s+ipfs/.test(s.command));
+    const hasVerify = steps.some(s => s.command && /yarn\s+verify/.test(s.command));
+    const missing = [];
+    if (!hasBaseDeploy) missing.push('yarn deploy --network base');
+    if (!hasBgipfs) missing.push('yarn ipfs (BGIPFS deploy)');
+    if (!hasVerify) missing.push('yarn verify --network base');
+
+    if (missing.length > 0) {
+      logStep('hard_gate', `MISSING REQUIRED STEPS: ${missing.join(', ')}. Re-extracting...`);
+      const augmentedPlan = `${plan}\n\n## HARD REQUIREMENT FAILURE — MUST FIX\nThe extracted steps are MISSING these mandatory steps: ${missing.join(', ')}.\n- Production frontend MUST deploy via BGIPFS (\`yarn ipfs\`), NOT Vercel.\n- Contract MUST deploy to Base mainnet (\`yarn deploy --network base\`).\n- Contract MUST be verified (\`yarn verify --network base\`).\nRe-extract ALL steps and INCLUDE these. Do NOT use yarn vercel:yolo for production.`;
+      steps = await generateSteps(augmentedPlan, analysis);
+      writeFileSync(join(buildDir, 'steps.json'), JSON.stringify(steps, null, 2));
+      logStep('hard_gate', `Re-extracted ${Array.isArray(steps) ? steps.length : '?'} steps with hard requirements.`);
+
+      // Verify again — if still missing, log a fatal warning but continue (deployer may still work)
+      const stillMissingBgipfs = !steps.some(s => s.command && /yarn\s+ipfs/.test(s.command));
+      if (stillMissingBgipfs) {
+        logStep('hard_gate', 'FATAL: Steps STILL missing yarn ipfs after re-extraction. Build will be incomplete.');
+      }
+    }
+  }
+
   // --- ensure deployer keystore for live deploys ---
   let deployer = null;
   const hasLiveDeploy = Array.isArray(steps) && steps.some(s =>

@@ -205,11 +205,16 @@ export async function executeAllSteps(steps, buildDir, context, previousLog = []
           }
 
           // Auto-install missing npm packages (e.g. "Module not found: Can't resolve '@fontsource/...'")
+          // Skip local aliases: ~~ (SE2 home alias), @/ (Next.js project alias), ./ and ../ (relative)
           const missingPkg = errorText.match(/Module not found:.*Can't resolve '([^']+)'/);
           if (missingPkg) {
-            const pkg = missingPkg[1].startsWith('@')
-              ? missingPkg[1].split('/').slice(0, 2).join('/')
-              : missingPkg[1].split('/')[0];
+            const unresolved = missingPkg[1];
+            if (unresolved.startsWith('~~') || unresolved.startsWith('@/') || unresolved.startsWith('.')) {
+              log(`EXECUTOR: skipping auto-install for local alias/path: ${unresolved}`);
+            } else {
+            const pkg = unresolved.startsWith('@')
+              ? unresolved.split('/').slice(0, 2).join('/')
+              : unresolved.split('/')[0];
             log(`EXECUTOR: auto-installing missing package: ${pkg}`);
             try {
               execSync(`yarn add ${pkg}`, {
@@ -224,6 +229,7 @@ export async function executeAllSteps(steps, buildDir, context, previousLog = []
             } catch (installErr) {
               log(`EXECUTOR: failed to install ${pkg}: ${installErr.message?.slice(0, 200)}`);
             }
+            } // end local alias check
           }
 
           const fixes = await fixCodeFromError(errorText, projectDir, step, context);
@@ -368,7 +374,7 @@ function preprocessCommand(command, projectDir) {
     const projectName = args[args.length - 1] || 'project';
     const skipInstall = command.includes('--skip-install') ? '' : ' --skip-install';
     const scaffoldPart = command.replace(/(create-eth@\S+)/, `$1${skipInstall}`)
-      .replace(/&&\s*cd\s+\S+\s*&&\s*yarn\s+install.*$/, '');
+      .replace(/\s*&&\s*cd\s+\S+.*$/, '');
     return { processed: `${scaffoldPart} && cd ${projectName} && YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install`, extraEnv: {} };
   }
 
@@ -400,6 +406,7 @@ function preprocessCommand(command, projectDir) {
     patchNextConfigForBuild(projectDir);
     patchLayoutIfNeeded(projectDir);
     patchSE2DebugPages(projectDir);
+    fixImportAliases(projectDir);
     // SE2's next.config.ts gates eslint/ts ignore on NEXT_PUBLIC_IGNORE_BUILD_ERROR.
     // Set it so ESLint/Prettier warnings don't fail generated code builds.
     extraEnv.NEXT_PUBLIC_IGNORE_BUILD_ERROR = 'true';
@@ -821,6 +828,17 @@ function sanitizeCssFiles(projectDir) {
         changed = true;
       }
 
+      // Fix 1b: remove invalid @import "daisyui/theme" lines — 'daisyui/theme' is not an exported
+      // path from the daisyui package. @plugin "daisyui" (already present in SE2 globals) handles
+      // everything. Importing a non-existent path crashes the webpack build.
+      const daisyThemeImport = /@import\s+"daisyui\/theme"[^;]*;?\n?/g;
+      if (daisyThemeImport.test(content)) {
+        daisyThemeImport.lastIndex = 0;
+        content = content.replace(daisyThemeImport, '');
+        log(`CSS-SANITIZE: removed invalid @import "daisyui/theme" in ${filePath}`);
+        changed = true;
+      }
+
       // Fix 2: replace @apply with DaisyUI semantic tokens
       // Handles: @apply bg-base-200 border ...; — remove just the known bad tokens
       for (const [token, replacement] of Object.entries(DAISY_VAR_MAP)) {
@@ -849,6 +867,61 @@ function sanitizeCssFiles(projectDir) {
       log(`CSS-SANITIZE: failed to process ${filePath}: ${err.message}`);
     }
   }
+}
+
+/**
+ * Fix incorrect import aliases in generated TypeScript/TSX files.
+ * LLMs sometimes write @/components/... or ~~/components/sub/... instead of
+ * the correct SE2 alias ~~/components/... (pointing to packages/nextjs/).
+ *
+ * Also fixes @/components/sub-dir/Component → ~~/components/Component by
+ * stripping any sub-directory in the @/ path.
+ */
+function fixImportAliases(projectDir) {
+  const nextjsDir = join(projectDir, 'packages', 'nextjs');
+  if (!existsSync(nextjsDir)) return;
+
+  const walkDir = (dir) => {
+    try {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
+          walkDir(full);
+        } else if (entry.isFile() && (entry.name.endsWith('.tsx') || entry.name.endsWith('.ts'))) {
+          try {
+            let content = readFileSync(full, 'utf-8');
+            let changed = false;
+
+            // @/components/possibly/sub/Component → ~~/components/Component
+            // (strip sub-dirs, keep the last segment as the component name)
+            if (content.includes('@/components/') || content.includes('@/hooks/') || content.includes('@/utils/')) {
+              content = content.replace(
+                /from\s+"@\/([^"]+)"/g,
+                (_, p) => `from "~~/${p}"`
+              ).replace(
+                /from\s+'@\/([^']+)'/g,
+                (_, p) => `from '~~/${p}'`
+              );
+              changed = true;
+            }
+
+            // ~~components/ → ~~/components/ (missing slash after ~~)
+            if (content.includes('~~components/') || content.includes('~~hooks/') || content.includes('~~utils/')) {
+              content = content.replace(/~~(components|hooks|utils|styles)/g, '~~/$1');
+              changed = true;
+            }
+
+            if (changed) {
+              writeFileSync(full, content);
+              log(`SE2-PATCH: fixed import aliases in ${relative(nextjsDir, full)}`);
+            }
+          } catch { /* ignore individual file errors */ }
+        }
+      }
+    } catch { /* ignore dir errors */ }
+  };
+
+  walkDir(nextjsDir);
 }
 
 /**

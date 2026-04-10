@@ -3,3 +3,4 @@ builds/
 .env
 .env.*
 plan.md
+.vercel

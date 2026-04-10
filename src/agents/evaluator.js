@@ -23,7 +23,13 @@ ${plan}
 4. Are security considerations addressed?
 5. Is the build step sequence logical and complete?
 6. Are model assignments cost-efficient (cheap where possible, expensive only for contracts)?
-7. Does the deployment plan cover both contract (Base) and frontend (BGIPFS)?
+7. Does the deployment plan cover both contract (Base mainnet) and frontend (BGIPFS via \`yarn ipfs\`)?
+
+## HARD REQUIREMENTS (if ANY of these are missing, set approved=false)
+- Plan MUST include a step that runs \`yarn deploy --network base\` (Base mainnet contract deploy)
+- Plan MUST include a step that runs \`yarn ipfs\` (BGIPFS frontend deploy) — NOT Vercel. Vercel is NOT acceptable for production.
+- Plan MUST include contract verification (\`yarn verify --network base\`)
+If any hard requirement is missing, approved MUST be false regardless of score.
 
 ## Output (JSON)
 {

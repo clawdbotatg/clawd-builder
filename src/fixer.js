@@ -265,6 +265,19 @@ function parseErrors(output) {
     });
   }
 
+  // Forge deploy: constructor reverted because an address arg was address(0).
+  // The deploy script used vm.envOr("TOKEN_ADDRESS", address(0)) but the env var isn't set.
+  // Fix: the deploy script must hardcode the real Base mainnet token address as the default.
+  if (/cannot be zero|address cannot be zero|invalid token address|zero address/i.test(output)
+      && /script failed|Error:/i.test(output)) {
+    errors.push({
+      message: 'Deploy reverted: address constructor arg is zero — use the real Base mainnet token address as vm.envOr default instead of address(0)',
+      file: 'script/Deploy.s.sol',
+      line: 1,
+      type: 'solidity',
+    });
+  }
+
   // Forge script deploy error: vm.startBroadcast called twice (Deploy.s.sol wraps sub-scripts
   // that also use ScaffoldEthDeployerRunner). Point to Deploy.s.sol as the broken file.
   if (/vm\.startBroadcast: a broadcast is active already/i.test(output)) {
