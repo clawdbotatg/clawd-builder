@@ -372,7 +372,22 @@ function preprocessCommand(command, projectDir) {
     return { processed: `${scaffoldPart} && cd ${projectName} && YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install`, extraEnv: {} };
   }
 
+  // Strip leading "cd <project> &&" that the planner sometimes adds when it doesn't
+  // know the executor already cds into the project dir.
   let cmd = command.replace(/^cd\s+\S+\s*&&\s*/, '');
+
+  // Strip project-name prefixes from file paths (e.g. "cat clawd-burn-board/AGENTS.md"
+  // when CWD is already clawd-burn-board). The project dir name is the last segment.
+  if (projectDir) {
+    const projName = projectDir.split('/').pop();
+    if (projName) {
+      // Replace "projName/" at word boundaries in the command, but not "packages/..."
+      // (which is a valid sub-path inside the project)
+      const projPrefixRe = new RegExp(`\\b${projName.replace(/[-]/g, '\\$&')}\\/(?!packages\\/)`, 'g');
+      cmd = cmd.replace(projPrefixRe, '');
+    }
+  }
+
   const extraEnv = {};
 
   if (/yarn\s+install/.test(cmd) && !cmd.includes('YARN_ENABLE_IMMUTABLE_INSTALLS')) {

@@ -60,6 +60,12 @@ be listed as dependencies for contract writing, test writing, or any other code 
 A cast call may revert or hit RPC rate limits — if code steps depend on it, the entire build fails.
 Verification steps may run in parallel with or after code steps, but never as prerequisites.
 
+NO "cat" / "ls" / "read file" STEPS:
+NEVER include a separate step just to read AGENTS.md, CLAUDE.md, or any documentation file.
+The build executor automatically gathers file context before each code-generation step.
+A "cat AGENTS.md" step will fail and cascade-skip ALL downstream steps, breaking the build.
+If you need to reference a file's content, it will be read automatically — do not add it as a step.
+
 LOCAL DEPLOY ALWAYS REQUIRES A RUNNING CHAIN:
 Before "yarn deploy" (local), you MUST have a step that runs "yarn fork --network base".
 The fork step starts a local anvil node forked from Base mainnet — required for all local deploys.

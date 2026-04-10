@@ -28,9 +28,15 @@ Rules:
 - Every file MUST start with === and end with === END ===`;
 
 export function classifyStep(step) {
-  if (step.command) return 'shell_cmd';
   const nameLower = (step.name || '').toLowerCase();
   const descLower = (step.description || '').toLowerCase();
+
+  // Pure "cat <file>" commands are documentation reads — treat as read_context so
+  // they always pass (the context assembler will supply file content anyway) and
+  // never cascade-skip downstream code-gen steps if the file is missing.
+  if (step.command && /^cat\s+\S+$/.test(step.command.trim())) return 'read_context';
+
+  if (step.command) return 'shell_cmd';
   if (nameLower.includes('read') || descLower.startsWith('read ')) return 'read_context';
   return 'code_gen';
 }
